@@ -1,0 +1,16 @@
+protein_enabled = 1
+protein_movable = 0
+P = 0.24 1.98 3.141592653589793
+Prx = 0.24
+P0 = 0 0 -2.18 0
+pro = 2 0.4 0.4
+mvin = 0.48
+pitch = 0
+hydrophilic_mode = 1
+patch_wx = 0.209
+patch_wy = 0.253
+patch_offset2 = 0.3490658503988659
+patch_offset3 = -0.3490658503988659
+protein_symmetrize = 0
+protein_pivot_align = 1
+protein_cap_mode = 1

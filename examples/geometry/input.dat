@@ -1,0 +1,15 @@
+chi = 30 30 0
+f = 0.8
+Vc = 1.14e-5
+N = 60
+m = 32 32 32
+D = 8 8 8
+readwin = 0
+justFE = 0
+dostring = 0
+perp_update = 0
+fix = 0 0
+ens = 2
+checkpoint_precision = 64
+max_outer = 1
+field_iterations = 5

@@ -1,0 +1,10 @@
+build/
+__pycache__/
+*.pyc
+src/protein_preview
+src/scft_gpu*
+*.h5
+*.xdmf
+*.vtk
+*.zip
+.DS_Store

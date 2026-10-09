@@ -1,0 +1,428 @@
+#include <cstdio>
+#include <cuda.h>
+#include <cuda_runtime_api.h>
+#include <cuda_runtime.h>
+#include <cufft.h>
+#include <math.h>
+
+#pragma once
+#define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
+
+void HandleError(cudaError_t err, char const * const file, int const line)
+{
+    if (err != cudaSuccess) {
+        fprintf(stderr, "%s in %s at line %d\n", cudaGetErrorString(err), file, line);
+        exit(EXIT_FAILURE);
+    }
+}
+
+void HandleError(cufftResult err, char const * const file, int const line)
+{
+    if (err != CUFFT_SUCCESS) {
+        switch(err) {
+            case CUFFT_INVALID_PLAN:
+                printf ("cufft %s in %s at line %d\n", "CUFFT_INVALID_PLAN", file, line);
+                break;
+            case CUFFT_INVALID_VALUE:
+                printf ("cufft %s in %s at line %d\n", "CUFFT_INVALID_VALUE", file, line);
+                break;
+            case CUFFT_INTERNAL_ERROR:
+                printf ("cufft %s in %s at line %d\n", "CUFFT_INTERNAL_ERROR", file, line);
+                break;
+            case CUFFT_EXEC_FAILED:
+                printf ("cufft %s in %s at line %d\n", "CUFFT_EXEC_FAILED", file, line);
+                break;
+            case CUFFT_SETUP_FAILED:
+                printf ("cufft %s in %s at line %d\n", "CUFFT_EXEC_FAILEDCUFFT_SETUP_FAILED", file, line);
+                break;
+            default:
+                printf ("cufft %s in %s at line %d\n", "CUFFT_EXEC_FAILEDCUFFT_SETUP_FAILED", file, line);
+        }
+        exit(EXIT_FAILURE);
+    }
+}
+
+// WARNING: threadsPerBlock MUST = 2^n, WHERE n IS AN INTEGER (DUE TO REDUCTION KERNELS) //
+int const threadsPerBlock = 512;
+
+__global__ void print_from_gpu(void) {
+    printf("\nHello World! from thread [%d,%d] \
+        From device\n\n", threadIdx.x,blockIdx.x);
+}
+
+
+__global__ void reduction_sum(double *a, double *c, const int _M) {
+    __shared__ double cache[threadsPerBlock];
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int cacheIndex = threadIdx.x;
+    
+    double temp = 0;
+    
+    while (tid < _M) {
+        temp += a[tid];
+        tid += blockDim.x * gridDim.x;
+    }
+    
+    // set the cache values //
+    cache[cacheIndex] = temp;
+    
+    // synchronise threads in this block //
+    __syncthreads();
+    
+    // for reductions, threadsPerBlock must be a power of 2 //
+    int i = blockDim.x / 2;
+    while (i != 0) {
+        if (cacheIndex < i) {
+            cache[cacheIndex] += cache[cacheIndex + i];
+        }
+        __syncthreads();
+        i /= 2;
+    }
+    
+    // store final value of sum for current block //
+    if (cacheIndex == 0) {
+        c[blockIdx.x] = cache[0];
+    }
+}
+
+__global__ void rA_rB_init_Ns_homo(double *dev_rhA, double *dev_rh, double *dev_rCA, double *dev_rCB, double *dev_q1_Nh, double *dev_q2_Nh, double *dev_q1_Ns, double *dev_q2_Ns, double *dev_q1_n1, double *dev_q2_n2, const int _M) ///MODDED X dev_q1_Nh
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    dev_rhA[tid]  = 0;//2.0 * dev_q1_Nh[tid];
+    dev_rh[tid]  = 2.0 * dev_q2_Nh[tid];
+    dev_rCA[tid] = dev_q2_Ns[tid] + dev_q1_n1[tid]*dev_q2_n2[tid];
+    dev_rCB[tid] = dev_q1_Ns[tid] + dev_q1_n1[tid]*dev_q2_n2[tid];
+    
+    
+}
+
+
+
+
+__global__ void sumconcs(double *dev_rA, double *dev_rB, double *dev_rCA, double *dev_rCB,  double *dev_rC, const int _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    
+    dev_rA[tid]  = dev_rA[tid] + dev_rCA[tid];
+    dev_rB[tid]  = dev_rB[tid] + dev_rCB[tid];
+    dev_rC[tid]  = dev_rCA[tid] + dev_rCB[tid];
+    
+}
+
+__global__ void sumconcs2(double *dev_rA, double *dev_rB, double *dev_rh, double *dev_rCB, double *dev_rhA, double *dev_rhB, double *dev_rP, double *dev_rM, double *dev_rCA, double *dev_rC, const int _M)
+
+{ // some of this is unnecessary but it costs very little
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    
+    
+    dev_rA[tid] = dev_rCA[tid]; //dev_rhA[tid] + dev_rCA[tid];
+    dev_rB[tid] = dev_rCB[tid];
+    dev_rh[tid] = dev_rhB[tid]; //dev_rhA[tid] + dev_rhB[tid];
+    dev_rC[tid] = dev_rCA[tid] + dev_rCB[tid];
+    dev_rP[tid] = dev_rA[tid] + dev_rB[tid] - 1.0; //irrelivant
+    dev_rM[tid] = dev_rA[tid] - dev_rB[tid];
+}
+
+__global__ void scale_concentrations(double *dev_rA, double *dev_rB, double *dev_rCA, double *dev_rCB, const double _zA, const double _zB, const double _zC, const double _ds1, const double _ds2, const int _M) //Be careful - written as if in GC. Make inputs work as in C
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    
+    dev_rA[tid]  = dev_rA[tid] * _zA*_ds1/3.0;
+    dev_rB[tid]  = dev_rB[tid] * _zB*_ds2/3.0;
+    
+    dev_rCA[tid] = dev_rCA[tid]* _zC*_ds1/3.0;
+    dev_rCB[tid] = dev_rCB[tid]* _zC*_ds2/3.0;
+}
+
+
+__global__ void set_W_density_sums_diffs0(double *dev_rA, double *dev_rB, double *dev_A, double *dev_B, const int _M) //CHECK BACK - don't need difference (no W+/W-) jsut need WA/WB
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    dev_A[tid] = dev_rA[tid];
+    dev_B[tid] = dev_rB[tid];
+    dev_rA[tid] = dev_A[tid] - dev_B[tid];
+    dev_rB[tid] = dev_A[tid] + dev_B[tid] - 1.0;
+}
+
+__global__ void rA_rB_mid_segments(double *dev_rX, double *dev_q1_s, double *dev_q2_Nsms, const int _wt, const int _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    dev_rX[tid] += _wt * dev_q1_s[tid] * dev_q2_Nsms[tid];
+}
+
+__global__ void rA_rB_init_n1_Ns(double *dev_rA, double *dev_rB, double *dev_q1_n1, double *dev_q2_Nsmn1, double *dev_q1_0, double *dev_q2_Ns, double *dev_q2_0, double *dev_q1_Ns, const int _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    dev_rA[tid] = dev_q1_n1[tid] * dev_q2_Nsmn1[tid] + dev_q1_0[tid] * dev_q2_Ns[tid];
+    dev_rB[tid] = dev_q1_n1[tid] * dev_q2_Nsmn1[tid] + dev_q2_0[tid] * dev_q1_Ns[tid];
+}
+
+
+__global__ void Array_set_value(double *a, const double b, int const _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    a[tid] = b;
+}
+
+
+
+__global__ void Mult_self(cufftDoubleComplex *a, const double *b, int const _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    a[tid].x *= b[tid];
+    a[tid].y *= b[tid];
+}
+
+
+__global__ void Mult_self(double *a, const double *b, int const _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    a[tid] *= b[tid];
+}
+
+
+__global__ void Mult(double *a, const double *b, const double *c, const int _M) {
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    a[tid] = b[tid] * c[tid];
+}
+
+
+__global__ void Richardson(double *dev_out, const double *dev_qs0, const double *dev_qs1, const double *dev_expWds2, const double *dev_expWds, const int _M) {
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    dev_out[tid] = (dev_qs0[tid] * dev_expWds2[tid] * 4 - dev_qs1[tid] * dev_expWds[tid]) / 3;
+}
+
+
+
+__global__ void Prepare_dev_expKsq2_expKsq(double *dev_expKsq2, double *dev_expKsq, double *dev_k_sq, const double ds, const int _M, const int _Mk)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _Mk) return;
+    dev_expKsq2[tid] = exp(-dev_k_sq[tid] * ds / 12) / _M;
+    dev_expKsq[tid]  = dev_expKsq2[tid] * dev_expKsq2[tid] * _M;
+}
+
+
+
+__global__ void Prepare_dev_dev_expWds2_dev_expWds(double *dev_expWds2_A1, double *dev_expWds_A1, double *dev_expWds2_B1, double *dev_expWds_B1, double *dev_expWds2_h1, double *dev_expWds_h1, const double *dev_W, const double ds, const int _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    
+    double wm1=dev_W[tid], wm2=dev_W[tid+_M],wp=dev_W[tid+2*_M];
+    
+    double WA = (wm1+wm2+wp)/3.0;
+    double WB = wp+wm2-2.0*WA;
+    double WC = wp+wm1-2.0*WA;
+    
+    dev_expWds2_A1[tid] = exp(-WA*ds / 4);  //8?
+    dev_expWds_A1[tid]  = dev_expWds2_A1[tid] * dev_expWds2_A1[tid];
+    
+    dev_expWds2_B1[tid] = exp(-WB*ds / 4);
+    dev_expWds_B1[tid]  = dev_expWds2_B1[tid] * dev_expWds2_B1[tid];
+    
+    dev_expWds2_h1[tid] = exp(-WC*ds / 4);
+    dev_expWds_h1[tid]  = dev_expWds2_h1[tid] * dev_expWds2_h1[tid];
+    
+}
+
+//add prots to fields
+__global__ void addptow(double *dev_W, double *dev_p1, double *dev_p2, double *dev_p3, const int _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    
+    dev_W[tid]    = dev_W[tid]   + 2.0*(dev_p2[tid] - dev_p3[tid]);
+    dev_W[tid+_M] = dev_W[tid+_M] + 2.0*(dev_p1[tid] - dev_p3[tid]);
+    
+}
+
+// Chunked spline path:
+// - dev_chunk_in stores a[ii] for one spatial chunk with layout rc*strn + ii
+// - dev_chunk_coeff stores c,b,d,a for that same chunk
+// - temporary spline arrays stay local to each thread instead of being stored
+//   in a full-domain global scratch array.
+__global__ void cubefit_chunk_g(const double *x, const double *dev_chunk_in, double *dev_chunk_coeff, const int chunkSize)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= chunkSize) return;
+
+    const int n = strn - 1;
+    double a[strn], b[strn], c[strn], d[strn];
+    double h[strn], A[strn], l[strn], u[strn], z[strn];
+
+    for (int ii = 0; ii < strn; ++ii) {
+        a[ii] = dev_chunk_in[tid * strn + ii];
+        b[ii] = 0.0;
+        c[ii] = 0.0;
+        d[ii] = 0.0;
+        h[ii] = 0.0;
+        A[ii] = 0.0;
+        l[ii] = 0.0;
+        u[ii] = 0.0;
+        z[ii] = 0.0;
+    }
+
+    for (int i = 0; i <= n - 1; ++i) h[i] = x[i + 1] - x[i];
+    for (int i = 1; i <= n - 1; ++i)
+        A[i] = 3.0 * (a[i + 1] - a[i]) / h[i] - 3.0 * (a[i] - a[i - 1]) / h[i - 1];
+
+    l[0] = 1.0;
+    u[0] = 0.0;
+    z[0] = 0.0;
+
+    for (int i = 1; i <= n - 1; ++i) {
+        l[i] = 2.0 * (x[i + 1] - x[i - 1]) - h[i - 1] * u[i - 1];
+        u[i] = h[i] / l[i];
+        z[i] = (A[i] - h[i - 1] * z[i - 1]) / l[i];
+    }
+
+    l[n] = 1.0;
+    z[n] = 0.0;
+    c[n] = 0.0;
+
+    for (int j = n - 1; j >= 0; --j) {
+        c[j] = z[j] - u[j] * c[j + 1];
+        b[j] = (a[j + 1] - a[j]) / h[j] - h[j] * (c[j + 1] + 2.0 * c[j]) / 3.0;
+        d[j] = (c[j + 1] - c[j]) / (3.0 * h[j]);
+    }
+
+    for (int ii = 0; ii < strn; ++ii) {
+        const int base = ii + strn * 4 * tid;
+        dev_chunk_coeff[base + 0 * strn] = c[ii];
+        dev_chunk_coeff[base + 1 * strn] = b[ii];
+        dev_chunk_coeff[base + 2 * strn] = d[ii];
+        dev_chunk_coeff[base + 3 * strn] = a[ii];
+    }
+}
+
+__global__ void eval_spline_deriv_chunk_g(const double *x, const double *dev_chunk_coeff, double *dev_chunk_eval, const int chunkSize)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= chunkSize) return;
+
+    for (int evali = 0; evali < strn; ++evali) {
+        const double xx = x[evali];
+        int nm = 0;
+        for (int i = 0; i < strn; ++i) {
+            if (x[i] < xx) nm = i;
+            else break;
+        }
+
+        const int base = nm + strn * 4 * tid;
+        const double c = dev_chunk_coeff[base + 0 * strn];
+        const double b = dev_chunk_coeff[base + 1 * strn];
+        const double d = dev_chunk_coeff[base + 2 * strn];
+        const double dx = xx - x[nm];
+        dev_chunk_eval[tid * strn + evali] = b + 2.0 * dx * c + 3.0 * dx * dx * d;
+    }
+}
+
+__global__ void eval_spline_value_chunk_g(const double *x, const double *dev_xref, const double *dev_chunk_coeff, double *dev_chunk_eval, const int chunkSize)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= chunkSize) return;
+
+    for (int evali = 0; evali < strn; ++evali) {
+        const double xx = dev_xref[evali];
+        int nm = 0;
+        for (int i = 0; i < strn; ++i) {
+            if (x[i] < xx) nm = i;
+            else break;
+        }
+
+        const int base = nm + strn * 4 * tid;
+        const double c = dev_chunk_coeff[base + 0 * strn];
+        const double b = dev_chunk_coeff[base + 1 * strn];
+        const double d = dev_chunk_coeff[base + 2 * strn];
+        const double a = dev_chunk_coeff[base + 3 * strn];
+        const double dx = xx - x[nm];
+        dev_chunk_eval[tid * strn + evali] = a + dx * b + dx * dx * c + dx * dx * dx * d;
+    }
+}
+
+
+
+__global__ void cubefit_g(double *x, int strn, double *dev_cubes, const int _M)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    
+    /** Step 0 */
+    const int n= strn-1;
+    int i, j;
+    __shared__ double h[48],A[48],l[48],u[48],z[48];
+    double* c=dev_cubes + (0*strn + strn*4*tid);//new double[npnt];
+    double* b=dev_cubes + (1*strn + strn*4*tid);//new double[n];
+    double* d=dev_cubes + (2*strn + strn*4*tid);//new double[n];
+    double* a=dev_cubes + (3*strn + strn*4*tid);//new double[n];
+    
+    // Step 1
+    for (i = 0; i <= n - 1; ++i) h[i] = x[i + 1] - x[i];
+    
+    // Step 2
+    for (i = 1; i <= n - 1; ++i)
+        A[i] = 3 * (a[i + 1] - a[i]) / h[i] - 3 * (a[i] - a[i - 1]) / h[i - 1];
+    
+    //   Step 3
+    l[0] = 1;
+    u[0] = 0;
+    z[0] = 0;
+    
+    // Step 4
+    for (i = 1; i <= n - 1; ++i) {
+        l[i] = 2 * (x[i + 1] - x[i - 1]) - h[i - 1] * u[i - 1];
+        u[i] = h[i] / l[i];
+        z[i] = (A[i] - h[i - 1] * z[i - 1]) / l[i];
+    }
+    
+    // Step 5
+    l[n] = 1;
+    z[n] = 0;
+    c[n] = 0;
+    
+    // Step 6
+    for (j = n - 1; j >= 0; --j) {
+        c[j] = z[j] - u[j] * c[j + 1];
+        b[j] = (a[j + 1] - a[j]) / h[j] - h[j] * (c[j + 1] + 2 * c[j]) / 3;
+        d[j] = (c[j + 1] - c[j]) / (3 * h[j]);
+    }
+    
+}
+__global__ void transpose_cube(double *dev_W, double *dev_cubes, int i, const int _M, const int _strn)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= _M) return;
+    DEV_CUBES(tid,3,i)=dev_W[tid];
+    
+}
+
+__global__ void prcubetest(double *dev_cubes, const int _strn, const int _M, int r, int ii)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid != r) return;
+    int kk=ii + 3*_strn + _strn*4*r;
+    printf("D: %d %d %lf\n",ii,kk,DEV_CUBES(r,3,ii));
+    
+}
+
+
+__global__ void prcubetest2(double *dev_W, const int _strn, const int _M, int r, int i)
+{
+    int const tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid != r) return;
+    printf("dW:%d %lf\n",i,dev_W[r]);
+    
+}
