@@ -1,9 +1,7 @@
 # Membrane SCFT with proteins
 
 CUDA/MPI self-consistent field and string calculations for membranes with
-protein fields. The current implementation and examples use arc-shaped proteins. This is a source-release candidate; full manuscript
-free-energy validation is in progress. Scientific reproduction datasets and
-final paper/release identifiers will be added after that validation.
+protein fields. The current implementation and examples use arc-shaped proteins. 
 
 ## Requirements and installation
 
