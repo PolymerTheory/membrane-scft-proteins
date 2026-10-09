@@ -1,2 +1,3 @@
+# Optional preview HDF5 export, output checking and tests; not solver dependencies.
 numpy
 h5py

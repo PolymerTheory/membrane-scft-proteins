@@ -1,9 +1,56 @@
 # Membrane SCFT with proteins
 
-CUDA/MPI self-consistent field theory (SCFT) and string calculations for
-membranes with protein fields. The model represents a blend of AB diblock
-copolymers and B homopolymers; proteins enter as external interaction potentials.
-The current geometry supports arc-shaped proteins with tunable patches and end caps.
+This code computes membrane structures and free energies in the presence of
+curved, protein-like scaffolds. It combines self-consistent field theory (SCFT)
+with the string method to study membrane deformation and pathways for fusion
+or fission. CUDA accelerates the field calculations; MPI distributes replicas
+(configurations along a pathway).
+
+The membrane is represented by AB diblock copolymers: hydrophobic A blocks form
+the membrane interior and hydrophilic B blocks form its surfaces. B homopolymers
+represent the surrounding solvent. The calculation resolves their density fields
+in a three-dimensional periodic box, rather than tracking individual atoms.
+
+## Protein model
+
+Proteins are prescribed, soft interaction potentials shaped like a curved tube:
+a partial torus (an arc), a complete ring, or a pitched arc. They represent a
+coarse-grained scaffold with tunable membrane-binding regions. The model uses
+three overlapping fields:
+
+- `prot1`: the backbone, which excludes lipid and favors solvent.
+- `prot2`: a region favoring hydrophilic head groups over tails and solvent.
+- `prot3`: a region favoring hydrophobic tails over head groups and solvent.
+
+With positive strengths, these fields can model steric constriction, adhesion,
+and insertion that splays lipid head groups. They are interaction potentials,
+not protein densities or an atomistic model of a particular protein.
+
+![Arc-shaped protein backbone and two membrane-interaction patches](docs/images/protein-model.png)
+
+*Protein-model illustration supplied by the authors: green backbone and two
+colored interaction regions. Their positions and widths are adjustable.*
+
+![Protein scaffold attached to a membrane tube](docs/images/protein-on-tube.png)
+
+*Example research configuration: a green protein scaffold on a magenta membrane
+tube. These illustrations explain the model; they are not outputs of the small
+installation examples.*
+
+The main geometry controls in `prot_input.dat` are:
+
+| Input | Meaning |
+|---|---|
+| `P = Pr Py Pth` | Backbone radial thickness, arc centerline radius, angular extent (radians) |
+| `Prx`, `pitch` | Backbone axial thickness; axial advance per full turn |
+| `pro = pro1 pro2 pro3` | Strengths of the three fields, scaled by `chi[0]` in the solver |
+| `hydrophilic_mode` | 0: head-group interaction along the backbone; 1: displaced patch |
+| `mvin`, `patch_wx`, `patch_wy` | Patch displacement toward the inner side of the arc and patch widths |
+| `patch_offset2`, `patch_offset3` | Patch angles around the backbone cross-section (radians) |
+| `protein_enabled`, `protein_movable` | Enable the protein fields; allow protein motion during solving |
+
+`P0s` sets each replica's position and starting arc angle; `qtns` sets its
+orientation. Caps, reflection and tilt alignment are controlled below.
 
 ## Origin and publications
 
@@ -22,7 +69,9 @@ This repository provides a cleaned implementation with configurable arc geometry
 
 - **Solver:** Linux, NVIDIA CUDA-capable GPU, CUDA/CUFFT, MPI, C++ compiler,
   HDF5 development libraries and zlib.
-- **Geometry preview:** C++ compiler and Python with NumPy/h5py; no GPU required.
+- **Python is not required to build or run the solver.**
+- **Optional CPU geometry preview:** C++ compiler; no GPU required. Python
+  with NumPy/h5py is used only for its HDF5 export (VTK export needs no Python).
 - **Examples, expected outputs and measured runtimes:** [examples/README.md](examples/README.md).
 
 ```sh
@@ -80,5 +129,8 @@ python -m pip install -r requirements.txt
 python -m unittest discover -s tests
 ```
 
-Tests cover cap/reflection switches and demo-output validation.
-MIT license; see [LICENSE.txt](LICENSE.txt) and [NOTICE.md](NOTICE.md).
+These optional Python tests cover cap/reflection switches and output-checker
+failures. NumPy handles numerical arrays; h5py reads HDF5 files. See the
+[example guide](examples/README.md) for what each demonstration checks.
+Code: MIT license. Author-supplied illustrations have separate attribution in
+[NOTICE.md](NOTICE.md). See [LICENSE.txt](LICENSE.txt) and [NOTICE.md](NOTICE.md).
