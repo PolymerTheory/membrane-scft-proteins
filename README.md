@@ -28,7 +28,7 @@ not protein densities or an atomistic model of a particular protein.
 
 ![Arc-shaped protein backbone and two membrane-interaction patches](docs/images/protein-model.png)
 
-*Protein-model illustration supplied by the authors: green backbone and two
+*Protein-model illustration: green backbone and two
 colored interaction regions. Their positions and widths are adjustable.*
 
 ![Protein scaffold attached to a membrane tube](docs/images/protein-on-tube.png)
