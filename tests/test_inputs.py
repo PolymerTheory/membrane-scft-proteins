@@ -1,6 +1,6 @@
 """Exercise public input switches through the CPU geometry executable."""
 from pathlib import Path
-import subprocess,tempfile,unittest,shutil
+import subprocess,tempfile,unittest,shutil,importlib.util
 import numpy as np
 import h5py
 ROOT=Path(__file__).resolve().parents[1]
@@ -31,6 +31,15 @@ class Inputs(unittest.TestCase):
    np.testing.assert_allclose(add,a+a[...,(-np.arange(n))%n],rtol=1e-6,atol=1e-7)
    np.testing.assert_array_equal(copy[...,:n//2+1],a[...,:n//2+1])
    np.testing.assert_array_equal(copy[...,n//2+1:],a[...,n//2-1:0:-1])
+ def test_geometry_demo_references(self):
+  spec=importlib.util.spec_from_file_location('geometry_check',ROOT/'examples/check_geometry.py')
+  checker=importlib.util.module_from_spec(spec);spec.loader.exec_module(checker)
+  for sym,example in [(0,'single-protein'),(1,'geometry')]:
+   r,a=self.preview(1,sym);self.assertEqual(r.returncode,0)
+   d=self.work/f'1_{sym}'
+   self.assertEqual(len(checker.verify(d,ROOT/'examples'/example/'expected_output.json')),3)
+   with h5py.File(d/'proteins.h5','r+') as h:h['prot1'][0,0,0,0]=float('nan')
+   with self.assertRaises(ValueError):checker.verify(d,ROOT/'examples'/example/'expected_output.json')
  def test_unsupported_caps_rejected(self):
   r,a=self.preview(2,0);self.assertNotEqual(r.returncode,0);self.assertIn(b'protein_cap_mode must be',r.stdout+r.stderr)
 if __name__=='__main__':unittest.main()

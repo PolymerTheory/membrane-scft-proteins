@@ -2456,6 +2456,7 @@ int main (int argc, char *argv[])
     
     tistr();
     printf("Done (%d) (Time: %s)\n",procid,tms);
+    MPI_Finalize();
     
     
 }

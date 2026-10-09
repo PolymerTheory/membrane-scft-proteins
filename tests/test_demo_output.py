@@ -16,8 +16,12 @@ class DemoOutputTests(unittest.TestCase):
                 with h5py.File(root / filename, 'w') as h:
                     for key in keys:
                         h[key] = np.zeros((4,32,32,32), dtype='f4')
+            (root / 'solver.log').write_text('Done (0) (Time: 1s)\n')
             np.savetxt(root / 'FEs', np.zeros((4,2)))
             self.assertEqual(len(checker.verify(root)), 10)
+            (root / 'solver.log').write_text('Setup (0)\n')
+            with self.assertRaises(ValueError): checker.verify(root)
+            (root / 'solver.log').write_text('Done (0) (Time: 1s)\n')
             with h5py.File(root / 'wins.h5', 'r+') as h:
                 h['W1'][0,0,0,0] = np.nan
             with self.assertRaises(ValueError): checker.verify(root)

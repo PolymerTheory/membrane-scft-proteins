@@ -2,6 +2,7 @@
 from pathlib import Path
 import argparse
 import json
+import re
 import h5py
 import numpy as np
 
@@ -9,6 +10,9 @@ import numpy as np
 def verify(directory):
     directory = Path(directory)
     result = {}
+    log = (directory / "solver.log").read_text()
+    if not re.search(r"^Done \(0\)", log, re.MULTILINE):
+        raise ValueError("solver.log must record normal Done exit for rank 0")
     groups = {"wins.h5": ("W1", "W2", "Wp"),
               "concentrations.h5": ("rhoA", "rhoB", "rhoH"),
               "proteins.h5": ("prot1", "prot2", "prot3")}
